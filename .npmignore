@@ -1,0 +1,16 @@
+.github/
+.env
+.env.*
+*.log
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.pcap
+*.pcapng
+*.zip
+CLAUDE_HANDOFF.md
+coverage/
+dist/
+test/

@@ -1,11 +1,12 @@
+node_modules/
+out/
+dist/
+coverage/
+*.log
 .DS_Store
 .env
 .env.*
 !.env.example
-node_modules/
-dist/
-coverage/
-*.log
 *.pem
 *.key
 *.crt
@@ -13,3 +14,7 @@ coverage/
 *.pfx
 *credentials*
 *secrets*
+*.pcap
+*.pcapng
+*.zip
+CLAUDE_HANDOFF.md
