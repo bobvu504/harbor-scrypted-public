@@ -1,0 +1,44 @@
+name: Bug report
+description: Report reproducible incorrect behavior (not security issues)
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include credentials, tokens, private video, or personal data.
+        Report vulnerabilities through **Security → Report a vulnerability**, not here.
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Project version or commit
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Scrypted version and host environment
+    validations:
+      required: true
+  - type: checkboxes
+    id: acknowledgement
+    attributes:
+      label: Acknowledgement
+      options:
+        - label: I removed credentials, tokens, private video, and personal data.
+          required: true
+        - label: I understand this project is provided as is without support or warranty.
+          required: true
