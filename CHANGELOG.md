@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.8
+
+- Removed the experimental UniFi Protect/ONVIF adapter and all related camera settings.
+- Removed the extra per-camera go2rtc processes, dedicated-IP listeners, credentials, validation, and documentation.
+- Added upgrade cleanup for legacy adapter processes, generated configuration files, and stored adapter credentials.
+- Added distinct-port validation and TCP/UDP availability probes with listener-specific bind-conflict errors.
+
 ## 0.1.7
 
 - Fixed authenticated Protect RTSP streams returning `404 Not Found` when audio was enabled.

@@ -23,8 +23,6 @@ Harbor camera(s)
   -> private H.264/Opus RTSP
   -> native Scrypted camera device(s)
   -> Scrypted HomeKit plugin
-  -> optional per-camera ONVIF adapter(s)
-  -> UniFi Protect
 ```
 
 No separate macOS Harbor bridge, `socat` relay, or manually created RTSP Camera device is required.
@@ -38,14 +36,12 @@ No separate macOS Harbor bridge, `socat` relay, or manually created RTSP Camera 
 - Uses the Harbor-published FFmpeg profile to convert the camera's H.265 video to HomeKit-friendly H.264.
 - Exposes H.264 video and optional 16 kHz mono Opus audio through Scrypted's `VideoCamera` API.
 - Downloads and supervises a pinned go2rtc runtime on Linux x64/arm64, or accepts a local go2rtc executable path.
-- Optionally runs one isolated, credentialed ONVIF/RTSP adapter per camera for native UniFi Protect adoption.
-- Copies the existing H.264 track and converts Harbor Opus audio to AAC for Protect without running a second video transcode.
 
 Source, issues, and pull requests: [Harbor-Systems/harbor-scrypted-public](https://github.com/Harbor-Systems/harbor-scrypted-public)
 
 ### Implementation status
 
-Harbor WHIP ingest and Scrypted live video have been tested with physical Harbor hardware. HomeKit uses Scrypted's standard camera integration. The UniFi Protect adapter is experimental and has not yet been verified end to end for adoption, live view, and recording on every Protect release.
+Harbor WHIP ingest and Scrypted live video have been tested with physical Harbor hardware. HomeKit uses Scrypted's standard camera integration.
 
 ## Requirements
 
@@ -55,7 +51,6 @@ Harbor WHIP ingest and Scrypted live video have been tested with physical Harbor
 - Internet access for the plugin's one-time download of pinned go2rtc `v1.9.14`, or a preinstalled go2rtc executable.
 - FFmpeg with `libx264`; the plugin uses Scrypted's FFmpeg path.
 - A reserved DHCP address for the Scrypted host.
-- For UniFi Protect: one additional IPv4 address per camera assigned to the Scrypted host. Distinct MAC addresses are strongly recommended.
 
 Do not forward Scrypted, go2rtc, port `11380`, or port `18555` from the internet. The bridge is intended only for a trusted home LAN.
 
@@ -130,58 +125,6 @@ Changing a camera's resolution or audio setting rebuilds the shared bridge confi
 
 The plugin provides live video and audio. Harbor does not currently provide a motion-event API to this plugin. For HomeKit Secure Video recordings and motion notifications, add a Scrypted motion/object-detection mixin (for example the motion detection option recommended by your Scrypted installation).
 
-## UniFi Protect
-
-Version `0.1.7` can present each Harbor camera as a separate ONVIF camera to UniFi Protect. It uses go2rtc `v1.9.14`, which contains specific UniFi Protect ONVIF fixes. Version `0.1.7` also separates direct H.264 video from the audio-only AAC conversion, avoiding the loopback RTSP conflict that caused authenticated `DESCRIBE` requests to return `404` in version `0.1.6`.
-
-Protect treats one ONVIF server as one camera. Consequently, every Harbor camera needs a dedicated IPv4 address. The plugin binds the same standard ports (`1984` for ONVIF and `8554` for RTSP) on each camera-specific address and launches a separate go2rtc child containing only that camera.
-
-### Assign dedicated addresses first
-
-Reserve unused addresses on the same network as Protect. Example only:
-
-```text
-Scrypted/Harbor bridge: 192.168.1.20
-Harbor 2400000000:      192.168.1.21
-Second Harbor camera:   192.168.1.22
-```
-
-Do not use these example addresses until you have confirmed they are unused.
-
-For a Proxmox LXC, the most reliable arrangement is one additional virtual network interface per camera, on the same Proxmox bridge and VLAN as the existing Scrypted interface. Give each interface its own static IP and locally administered MAC. Add no additional default gateways. This can be done from **LXC → Resources/Network → Add** in Proxmox. When several interfaces occupy the same IPv4 subnet, configure Linux ARP behavior so each address answers on its assigned interface:
-
-```text
-net.ipv4.conf.all.arp_ignore=1
-net.ipv4.conf.all.arp_announce=2
-```
-
-Apply those values using the Linux network/sysctl configuration appropriate for the Scrypted container, then verify the addresses inside the container with `ip -br address`. Do not proceed until each address is visible on the Scrypted host.
-
-### Enable one adapter per camera
-
-1. Open a Harbor camera in Scrypted and expand **UniFi Protect**.
-2. Enter that camera's **Dedicated ONVIF IPv4 Address**.
-3. Leave **ONVIF Port** at `1984` and **Protect RTSP Port** at `8554`.
-4. Leave **Require ONVIF/RTSP Password** enabled.
-5. Choose an **ONVIF Username** and a password of at least 12 characters, or keep the generated 192-bit password.
-6. Enable **UniFi Protect Adapter**.
-7. Confirm **UniFi Protect Status** becomes `Ready at <address>:1984`.
-8. Repeat with a different address for every additional Harbor camera.
-
-The password field is masked in Scrypted. Reveal/copy it from the camera settings and enter the same username and password during Protect adoption. The generated adapter configuration is written with owner-only file permissions. Disabling the adapter stops its process and removes that generated runtime file.
-
-### Adopt in Protect
-
-1. In UniFi Protect, open **Settings → System** and enable **Discover Third-Party Cameras**.
-2. If a camera is not discovered automatically, open **Help → Advanced Adoption**.
-3. Enter the camera's **Protect Advanced Adoption Address**, for example `192.168.1.21:1984`.
-4. Enter the matching ONVIF username and password from Scrypted.
-5. Adopt the second camera using its own address.
-
-Allow the Protect console/UNVR to reach each dedicated address on TCP `1984` and TCP `8554`. Do not expose either port to the internet. If Protect cannot adopt while authentication is enabled, temporarily disable **Require ONVIF/RTSP Password**, adopt with placeholder credentials, and restrict both ports at the firewall to the Protect console. A password entered only in Protect does not secure an adapter whose authentication toggle is off.
-
-Live view, playback, and continuous recording are the initial target. The adapter does not currently forward Scrypted/OpenCV motion events as ONVIF events, so Protect motion and smart detections require additional event support or compatible UniFi AI hardware.
-
 ## Provider settings
 
 - **Scrypted LAN Address**: Set this explicitly if Scrypted has multiple interfaces or advertises the wrong address. Use the reserved LAN address of the Scrypted host, not an address belonging to an older bridge computer.
@@ -191,6 +134,8 @@ Live view, playback, and continuous recording are the initial target. The adapte
 - **Expose go2rtc WHIP Fallback** (Advanced): Diagnostic only. Binds the go2rtc API to the LAN behind a shared username/password so Harbor can publish straight to go2rtc, bypassing this plugin's proxy. Each camera page then shows a **go2rtc WHIP Fallback Endpoint**. The credential is shared by every camera on the bridge and `/api/streams` also becomes LAN-reachable, so leave this off in normal operation.
 - **Private RTSP Port**: `18554`, loopback only.
 - **go2rtc Executable**: Optional absolute path. Blank means managed automatic installation on Linux x64/arm64.
+
+The WHIP, API, RTSP, and WebRTC settings must use four distinct TCP port numbers. Before starting go2rtc, the plugin checks that the API and RTSP TCP listeners and the WebRTC TCP/UDP listeners are available.
 
 ## Troubleshooting
 
@@ -212,7 +157,15 @@ Version `0.1.3` also set go2rtc's `exec.allow_paths` to the bare string `ffmpeg`
 
 ### go2rtc reports `bind: address already in use`
 
-Deploy version `0.1.3` or newer. A go2rtc child from an earlier plugin worker could survive a plugin reload and retain ports `11984` and `18554`. Version `0.1.3` identifies and stops only a go2rtc process using this plugin's exact configuration path before starting the replacement. It also refuses to mark the bridge as running when the newly started process reports a port bind failure.
+Deploy version `0.1.8` or newer. The plugin rejects overlapping configured ports, checks each go2rtc TCP/UDP listener before launch, and reports the exact listener and address that is unavailable. It also identifies and stops only a stale go2rtc process using this plugin's exact configuration path.
+
+Run this inside the Scrypted host or container, replacing `<port>` with the port reported by the plugin:
+
+```bash
+ss -lntup | grep -E ':<port>\\b'
+```
+
+If another Harbor plugin copy owns the port, disable that copy. If an unrelated service owns it, choose an unused value in **Harbor Bridge → Advanced** and update the relevant LAN/firewall rule. Do not terminate an unknown process solely because it uses go2rtc.
 
 ### Bridge Status shows a download error
 
@@ -240,21 +193,6 @@ Set **go2rtc Executable** to a local go2rtc `v1.9.14` binary. The service user t
 
 Add a motion or object-detection mixin. This plugin has no Harbor-native motion event feed, and HomeKit Secure Video normally needs motion events to trigger recordings.
 
-### UniFi Protect adapter reports `Unable to bind`
-
-- Confirm the dedicated IP is assigned to the Scrypted host with `ip -br address`.
-- Confirm no other service is using TCP `1984` or `8554` on that address.
-- Do not reuse one address for two cameras; the plugin rejects duplicates.
-- If multiple interfaces share a subnet, verify the ARP settings in the UniFi Protect section above.
-
-### Protect finds one camera but not the second
-
-Each camera needs its own ONVIF process and dedicated IP. Different ports on a single address are not the supported multi-camera layout. Confirm Protect can resolve each IP to the intended distinct MAC address, then use Advanced Adoption with `<camera-ip>:1984`.
-
-### Protect authentication fails
-
-go2rtc enforces HTTP Basic authentication on ONVIF and standard RTSP authentication when **Require ONVIF/RTSP Password** is enabled. Some Protect releases or adoption paths may expect a different ONVIF authentication mode. As a compatibility test, turn the toggle off, restart the bridge, and adopt using placeholder values. If that works, leave access limited by firewall to the Protect console rather than assuming the placeholder password is enforced.
-
 ## Security design
 
 - Each camera receives its own random 32-byte token.
@@ -265,21 +203,16 @@ go2rtc enforces HTTP Basic authentication on ONVIF and standard RTSP authenticat
 - Request bodies are capped at 256 KiB and the connection is destroyed once the cap is exceeded.
 - go2rtc's API and RTSP ports bind to `127.0.0.1` unless the diagnostic WHIP fallback is explicitly enabled, in which case the API requires a generated username and password for non-loopback callers.
 - The go2rtc configuration loads only the API, RTSP, WebRTC, exec, and FFmpeg modules, restricts API paths, and restricts `exec.allow_paths` to the exact FFmpeg executable Scrypted provides.
-- Each Protect adapter exposes only `/api`, `/api/frame.jpeg`, and `/onvif/` on its HTTP listener; configuration mutation, restart, logs, WebRTC, and the WebUI are not registered.
-- Protect credentials are stored in Scrypted device storage and in a generated owner-only (`0600`) runtime configuration. They are never included in build artifacts.
-- Every Protect adapter contains exactly one camera stream. Password authentication can be disabled only as an explicit compatibility setting.
 - The managed runtime download is pinned to a fixed upstream release. Its SHA-256 is logged after download; production maintainers should additionally publish and enforce an architecture-specific checksum allowlist.
 
 Treat every complete WHIP endpoint as a password. Regenerate its token if it is exposed.
 
 ## Current limitations
 
-- Harbor ingest and Scrypted live video are hardware-tested; UniFi Protect compatibility remains experimental.
+- Harbor ingest and Scrypted live video are hardware-tested.
 - Automatic go2rtc installation supports Linux x64 and arm64 only.
 - Updating any stream-transcode setting briefly restarts every Harbor camera because they share one bridge runtime.
 - No Harbor-native motion, privacy-mode, talkback, night-light, or status controls.
-- Protect adapters do not yet emit ONVIF motion/smart-detection events or provide PTZ/talkback.
-- UniFi Protect output requires one host-owned IPv4 address per camera; the plugin does not create network interfaces or choose addresses automatically.
 - No bundled go2rtc checksum allowlist yet; see the security note above.
 - One H.265→H.264 FFmpeg transcode runs per actively consumed camera stream.
 
@@ -326,5 +259,3 @@ The MIT License permits use, copying, modification, distribution, and sale, but 
 - [Scrypted TypeScript plugin template](https://github.com/koush/scrypted-vscode-typescript)
 - [Scrypted RTSP plugin implementation](https://github.com/koush/scrypted/tree/main/plugins/rtsp)
 - [go2rtc WHIP ingest documentation](https://go2rtc.org/internal/webrtc/)
-- [UniFi Protect third-party camera guide](https://help.ui.com/hc/en-us/articles/26301104828439-Third-Party-Cameras-in-UniFi-Protect)
-- [go2rtc ONVIF server](https://github.com/AlexxIT/go2rtc/tree/v1.9.14/internal/onvif)

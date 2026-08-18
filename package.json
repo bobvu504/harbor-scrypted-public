@@ -1,7 +1,7 @@
 {
   "name": "@harbor-community/scrypted-harbor",
-  "version": "0.1.7",
-  "description": "Multi-camera Harbor WHIP bridge with HomeKit and per-camera UniFi Protect ONVIF output",
+  "version": "0.1.8",
+  "description": "Multi-camera Harbor WHIP bridge for Scrypted and HomeKit",
   "author": "Community project",
   "license": "MIT",
   "private": true,
@@ -36,9 +36,7 @@
     "camera",
     "whip",
     "webrtc",
-    "homekit",
-    "onvif",
-    "unifi-protect"
+    "homekit"
   ],
   "scrypted": {
     "name": "Harbor Camera Bridge",
