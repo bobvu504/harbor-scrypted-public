@@ -11,12 +11,7 @@ import {
   Settings,
   VideoCamera,
 } from '@scrypted/sdk';
-import {
-  parsePort,
-  validateProtectPassword,
-  validateProtectUsername,
-  validateToken,
-} from './core.mjs';
+import { validateToken } from './core.mjs';
 import type HarborCameraProvider from './main';
 
 export class HarborCamera extends ScryptedDeviceBase implements VideoCamera, Settings {
@@ -40,22 +35,6 @@ export class HarborCamera extends ScryptedDeviceBase implements VideoCamera, Set
 
   get ingestToken(): string {
     return this.storage.getItem('token') || '';
-  }
-
-  get protectEnabled(): boolean {
-    return this.storage.getItem('protectEnabled') === 'true';
-  }
-
-  get protectRequireAuth(): boolean {
-    return this.storage.getItem('protectRequireAuth') !== 'false';
-  }
-
-  get protectApiPort(): number {
-    return parsePort(this.storage.getItem('protectApiPort'), 1984);
-  }
-
-  get protectRtspPort(): number {
-    return parsePort(this.storage.getItem('protectRtspPort'), 8554);
   }
 
   async getVideoStreamOptions(): Promise<ResponseMediaStreamOptions[]> {
@@ -140,82 +119,6 @@ export class HarborCamera extends ScryptedDeviceBase implements VideoCamera, Set
         value: this.audioEnabled,
       },
       {
-        key: 'protectEnabled',
-        title: 'Enable UniFi Protect Adapter',
-        description: 'Starts a dedicated go2rtc ONVIF server for this camera. Configure a unique IPv4 address below before enabling.',
-        subgroup: 'UniFi Protect',
-        type: 'boolean',
-        value: this.protectEnabled,
-      },
-      {
-        key: 'protectStatus',
-        title: 'UniFi Protect Status',
-        subgroup: 'UniFi Protect',
-        value: this.provider.getProtectStatus(this.serial),
-        readonly: true,
-      },
-      {
-        key: 'protectAddress',
-        title: 'Dedicated ONVIF IPv4 Address',
-        description: 'Must already be assigned to this Scrypted host and must be unique for this camera. A distinct MAC address is recommended.',
-        subgroup: 'UniFi Protect',
-        placeholder: '192.168.1.21',
-        value: this.storage.getItem('protectAddress') || '',
-      },
-      {
-        key: 'protectAdoptionTarget',
-        title: 'Protect Advanced Adoption Address',
-        description: 'Enter this host:port in UniFi Protect Advanced Adoption.',
-        subgroup: 'UniFi Protect',
-        value: this.provider.getProtectAdoptionTarget(this.serial),
-        readonly: true,
-      },
-      {
-        key: 'protectRequireAuth',
-        title: 'Require ONVIF/RTSP Password',
-        description: 'Uses HTTP Basic and RTSP authentication. Disable temporarily only if your Protect version cannot adopt an authenticated go2rtc ONVIF server.',
-        subgroup: 'UniFi Protect',
-        type: 'boolean',
-        value: this.protectRequireAuth,
-      },
-      {
-        key: 'protectUsername',
-        title: 'ONVIF Username',
-        subgroup: 'UniFi Protect',
-        value: this.storage.getItem('protectUsername') || 'harbor',
-      },
-      {
-        key: 'protectPassword',
-        title: 'ONVIF Password',
-        description: 'Enter this same credential during Protect adoption. Stored in the plugin-owned configuration file with owner-only permissions.',
-        subgroup: 'UniFi Protect',
-        type: 'password',
-        value: this.provider.getProtectPassword(this.serial),
-      },
-      {
-        key: 'regenerateProtectPassword',
-        title: 'Regenerate ONVIF Password',
-        description: 'After adoption, update or re-adopt the camera in Protect with the new password.',
-        subgroup: 'UniFi Protect',
-        type: 'button',
-      },
-      {
-        key: 'protectApiPort',
-        title: 'ONVIF Port',
-        description: 'go2rtc exposes ONVIF through its API listener. The default is 1984.',
-        subgroup: 'UniFi Protect Advanced',
-        type: 'integer',
-        value: this.protectApiPort,
-      },
-      {
-        key: 'protectRtspPort',
-        title: 'Protect RTSP Port',
-        description: 'Protect receives H.264 video and optional AAC audio on this port. The default is 8554.',
-        subgroup: 'UniFi Protect Advanced',
-        type: 'integer',
-        value: this.protectRtspPort,
-      },
-      {
         key: 'bridgeStatus',
         title: 'Bridge Status',
         value: this.provider.bridgeStatus,
@@ -247,56 +150,6 @@ export class HarborCamera extends ScryptedDeviceBase implements VideoCamera, Set
     else if (key === 'audio') {
       this.storage.setItem('audio', String(value !== false && value !== 'false'));
       restart = true;
-    }
-    else if (key === 'protectEnabled') {
-      const enabled = value !== false && value !== 'false';
-      if (enabled) {
-        this.provider.assertProtectAddressAvailable(this.serial, this.storage.getItem('protectAddress'));
-        if (this.protectRequireAuth) {
-          validateProtectUsername(this.storage.getItem('protectUsername') || 'harbor');
-          validateProtectPassword(this.provider.getProtectPassword(this.serial));
-        }
-      }
-      this.storage.setItem('protectEnabled', String(enabled));
-      restart = true;
-    }
-    else if (key === 'protectAddress') {
-      const raw = String(value || '').trim();
-      if (!raw && this.protectEnabled)
-        throw new Error('Disable the UniFi Protect adapter before clearing its address.');
-      this.storage.setItem('protectAddress', raw ? this.provider.assertProtectAddressAvailable(this.serial, raw) : '');
-      restart = this.protectEnabled;
-    }
-    else if (key === 'protectRequireAuth') {
-      const enabled = value !== false && value !== 'false';
-      if (enabled) {
-        validateProtectUsername(this.storage.getItem('protectUsername') || 'harbor');
-        validateProtectPassword(this.provider.getProtectPassword(this.serial));
-      }
-      this.storage.setItem('protectRequireAuth', String(enabled));
-      restart = this.protectEnabled;
-    }
-    else if (key === 'protectUsername') {
-      this.storage.setItem('protectUsername', validateProtectUsername(value));
-      restart = this.protectEnabled;
-    }
-    else if (key === 'protectPassword') {
-      this.storage.setItem('protectPassword', validateProtectPassword(value));
-      restart = this.protectEnabled;
-    }
-    else if (key === 'regenerateProtectPassword') {
-      this.storage.setItem('protectPassword', this.provider.generateProtectPassword());
-      restart = this.protectEnabled;
-    }
-    else if (key === 'protectApiPort' || key === 'protectRtspPort') {
-      const port = parsePort(value, -1);
-      if (port === -1)
-        throw new Error('Port must be an integer from 1 through 65535.');
-      const other = key === 'protectApiPort' ? this.protectRtspPort : this.protectApiPort;
-      if (port === other)
-        throw new Error('ONVIF and RTSP listeners cannot use the same port.');
-      this.storage.setItem(key, String(port));
-      restart = this.protectEnabled;
     }
     else if (key === 'restartBridge') {
       restart = true;

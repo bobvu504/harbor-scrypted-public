@@ -17,6 +17,7 @@ import sdk, {
 } from '@scrypted/sdk';
 import { ChildProcess, spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
+import { createSocket } from 'node:dgram';
 import { constants as fsConstants } from 'node:fs';
 import fs from 'node:fs/promises';
 import { createServer, IncomingMessage, Server, ServerResponse } from 'node:http';
@@ -24,7 +25,6 @@ import path from 'node:path';
 import {
   buildGo2rtcConfig,
   buildGo2rtcWhipEndpoint,
-  buildProtectGo2rtcConfig,
   buildWhipEndpoint,
   decodeSessionTarget,
   encodeSessionTarget,
@@ -33,9 +33,7 @@ import {
   parsePort,
   parseWhipUrl,
   secureTokenEqual,
-  validateProtectAddress,
-  validateProtectPassword,
-  validateProtectUsername,
+  validateBridgePorts,
   validateSerial,
   validateToken,
 } from './core.mjs';
@@ -45,26 +43,20 @@ const GO2RTC_VERSION = 'v1.9.14';
 const MAX_RUNTIME_BYTES = 100 * 1024 * 1024;
 const MAX_WHIP_BODY_BYTES = 256 * 1024;
 const GO2RTC_API_USERNAME = 'harbor';
+const LEGACY_CAMERA_SETTINGS = [
+  'protectAddress',
+  'protectApiPort',
+  'protectEnabled',
+  'protectPassword',
+  'protectRequireAuth',
+  'protectRtspPort',
+  'protectUsername',
+] as const;
 
 interface CameraConfig {
   serial: string;
   height: number;
   audio: boolean;
-}
-
-interface ProtectAdapterConfig extends CameraConfig {
-  enabled: boolean;
-  address: string;
-  apiPort: number;
-  rtspPort: number;
-  requireAuth: boolean;
-  username: string;
-  password: string;
-}
-
-interface ProtectAdapterProcess {
-  child: ChildProcess;
-  configPath: string;
 }
 
 export default class HarborCameraProvider extends ScryptedDeviceBase
@@ -76,8 +68,6 @@ export default class HarborCameraProvider extends ScryptedDeviceBase
 
   private readonly devices = new Map<string, HarborCamera>();
   private readonly nativeIds = new Set<string>();
-  private readonly protectAdapters = new Map<string, ProtectAdapterProcess>();
-  private readonly protectStatuses = new Map<string, string>();
   private go2rtc?: ChildProcess;
   private whipServer?: Server;
   private whipServerPort?: number;
@@ -91,24 +81,21 @@ export default class HarborCameraProvider extends ScryptedDeviceBase
     super(nativeId);
     process.once('exit', () => {
       this.go2rtc?.kill('SIGTERM');
-      for (const adapter of this.protectAdapters.values())
-        adapter.child.kill('SIGTERM');
       this.whipServer?.close();
     });
     for (const id of sdk.deviceManager.getNativeIds()) {
-      if (id)
+      if (id) {
         this.nativeIds.add(id);
+        const storage = sdk.deviceManager.getDeviceStorage(id);
+        for (const key of LEGACY_CAMERA_SETTINGS)
+          storage.removeItem(key);
+      }
     }
     this.restartBridge().catch(error => this.setBridgeStatus(`Error: ${error.message}`));
   }
 
   generateToken(): string {
     return randomBytes(32).toString('hex');
-  }
-
-  generateProtectPassword(): string {
-    // Hex avoids accidental shell/URL ambiguity while retaining 192 bits.
-    return randomBytes(24).toString('hex');
   }
 
   isBridgeReady(): boolean {
@@ -163,67 +150,6 @@ export default class HarborCameraProvider extends ScryptedDeviceBase
         audio: storage.getItem('audio') !== 'false',
       };
     });
-  }
-
-  private get protectConfigs(): ProtectAdapterConfig[] {
-    return [...this.nativeIds].sort().map(serial => {
-      const storage = sdk.deviceManager.getDeviceStorage(serial);
-      const height = Number(storage.getItem('height'));
-      return {
-        serial,
-        height: [360, 720, 1080].includes(height) ? height : 720,
-        audio: storage.getItem('audio') !== 'false',
-        enabled: storage.getItem('protectEnabled') === 'true',
-        address: storage.getItem('protectAddress') || '',
-        apiPort: parsePort(storage.getItem('protectApiPort'), 1984),
-        rtspPort: parsePort(storage.getItem('protectRtspPort'), 8554),
-        requireAuth: storage.getItem('protectRequireAuth') !== 'false',
-        username: storage.getItem('protectUsername') || 'harbor',
-        password: storage.getItem('protectPassword') || '',
-      };
-    });
-  }
-
-  getProtectPassword(serial: string): string {
-    const storage = sdk.deviceManager.getDeviceStorage(validateSerial(serial));
-    let password = storage.getItem('protectPassword');
-    if (!password) {
-      password = this.generateProtectPassword();
-      storage.setItem('protectPassword', password);
-    }
-    return password;
-  }
-
-  getProtectStatus(serial: string): string {
-    const storage = sdk.deviceManager.getDeviceStorage(validateSerial(serial));
-    if (storage.getItem('protectEnabled') !== 'true')
-      return 'Disabled';
-    return this.protectStatuses.get(serial) || 'Waiting for bridge restart';
-  }
-
-  getProtectAdoptionTarget(serial: string): string {
-    const storage = sdk.deviceManager.getDeviceStorage(validateSerial(serial));
-    const address = storage.getItem('protectAddress')?.trim();
-    if (!address)
-      return 'Set a dedicated IPv4 address, then enable the adapter.';
-    try {
-      return `${validateProtectAddress(address)}:${parsePort(storage.getItem('protectApiPort'), 1984)}`;
-    }
-    catch {
-      return 'The configured UniFi Protect address is invalid.';
-    }
-  }
-
-  assertProtectAddressAvailable(serial: string, rawAddress: unknown): string {
-    const address = validateProtectAddress(rawAddress);
-    for (const otherSerial of this.nativeIds) {
-      if (otherSerial === serial)
-        continue;
-      const other = sdk.deviceManager.getDeviceStorage(otherSerial).getItem('protectAddress')?.trim();
-      if (other === address)
-        throw new Error(`UniFi Protect address ${address} is already assigned to Harbor ${otherSerial}.`);
-    }
-    return address;
   }
 
   getRtspUrl(serial: string): string {
@@ -330,12 +256,6 @@ export default class HarborCameraProvider extends ScryptedDeviceBase
     storage.setItem('height', String(height));
     storage.setItem('audio', String(audio));
     storage.setItem('name', name);
-    storage.setItem('protectUsername', 'harbor');
-    storage.setItem('protectPassword', this.generateProtectPassword());
-    storage.setItem('protectRequireAuth', 'true');
-    storage.setItem('protectApiPort', '1984');
-    storage.setItem('protectRtspPort', '8554');
-    storage.setItem('protectEnabled', 'false');
     this.nativeIds.add(serial);
     await this.restartBridge();
     return serial;
@@ -479,6 +399,12 @@ export default class HarborCameraProvider extends ScryptedDeviceBase
       const parsed = parsePort(value, -1);
       if (parsed === -1)
         throw new Error('Port must be an integer from 1 through 65535.');
+      validateBridgePorts({
+        whipPort: key === 'whipPort' ? parsed : this.whipPort,
+        apiPort: key === 'apiPort' ? parsed : this.apiPort,
+        rtspPort: key === 'rtspPort' ? parsed : this.rtspPort,
+        webrtcPort: key === 'webrtcPort' ? parsed : this.webrtcPort,
+      });
       this.storage.setItem(key, String(parsed));
     }
     else if (key === 'exposeGo2rtcWhip') {
@@ -513,7 +439,6 @@ export default class HarborCameraProvider extends ScryptedDeviceBase
 
   private async restartBridgeNow(): Promise<void> {
     clearTimeout(this.respawnTimer);
-    await this.stopProtectAdapters();
     const oldProcess = this.go2rtc;
     this.go2rtc = undefined;
     if (oldProcess && !oldProcess.killed) {
@@ -541,8 +466,10 @@ export default class HarborCameraProvider extends ScryptedDeviceBase
     this.setBridgeStatus('Starting');
     const filesPath = await sdk.mediaManager.getFilesPath();
     await fs.mkdir(filesPath, { recursive: true });
+    await this.removeLegacyAdapterState(filesPath);
     const configPath = path.join(filesPath, 'go2rtc.json');
     await this.stopStaleGo2rtc(configPath);
+    await this.assertGo2rtcPortsAvailable();
     const executable = await this.resolveGo2rtcExecutable(filesPath);
     const ffmpegPath = await sdk.mediaManager.getFFmpegPath();
     const advertisedAddress = await this.resolveAdvertisedAddress();
@@ -607,7 +534,6 @@ export default class HarborCameraProvider extends ScryptedDeviceBase
             if (child.exitCode !== null)
               throw new Error(`go2rtc exited with code ${child.exitCode}.`);
             this.setBridgeStatus('Running');
-            await this.startProtectAdapters(executable, filesPath, ffmpegPath);
             return;
           }
         }
@@ -621,163 +547,6 @@ export default class HarborCameraProvider extends ScryptedDeviceBase
     catch (error) {
       if (this.go2rtc === child)
         this.go2rtc = undefined;
-      if (!child.killed)
-        child.kill('SIGTERM');
-      throw error;
-    }
-  }
-
-  private setProtectStatus(serial: string, status: string): void {
-    this.protectStatuses.set(serial, status);
-    this.devices.get(serial)?.onDeviceEvent(ScryptedInterface.Settings, undefined).catch(() => undefined);
-  }
-
-  private async stopProtectAdapters(): Promise<void> {
-    const adapters = [...this.protectAdapters.values()];
-    this.protectAdapters.clear();
-    for (const { child } of adapters) {
-      if (!child.killed)
-        child.kill('SIGTERM');
-    }
-    if (adapters.length)
-      await new Promise(resolve => setTimeout(resolve, 250));
-    for (const { child } of adapters) {
-      if (child.exitCode === null && !child.killed)
-        child.kill('SIGKILL');
-    }
-    this.protectStatuses.clear();
-  }
-
-  private async startProtectAdapters(executable: string, filesPath: string, ffmpegPath: string): Promise<void> {
-    const all = this.protectConfigs;
-    const directory = path.join(filesPath, 'protect');
-    await fs.mkdir(directory, { recursive: true });
-    await Promise.all(all.map(async config => {
-      const configPath = path.join(directory, `${config.serial}.json`);
-      await this.stopStaleGo2rtc(configPath);
-      if (!config.enabled) {
-        await fs.unlink(configPath).catch((error: any) => {
-          if (error?.code !== 'ENOENT')
-            throw error;
-        });
-      }
-    }));
-
-    const enabled = all.filter(config => config.enabled);
-    const addresses = new Map<string, string>();
-
-    await Promise.all(enabled.map(async config => {
-      try {
-        const address = validateProtectAddress(config.address);
-        const duplicate = addresses.get(address);
-        if (duplicate)
-          throw new Error(`Dedicated IPv4 address ${address} is also assigned to Harbor ${duplicate}.`);
-        addresses.set(address, config.serial);
-        // Resolve/generate credentials before writing the root-only config.
-        if (config.requireAuth) {
-          config.username = validateProtectUsername(config.username);
-          config.password = validateProtectPassword(config.password || this.getProtectPassword(config.serial));
-        }
-        await this.startProtectAdapter(executable, filesPath, ffmpegPath, config);
-      }
-      catch (error: any) {
-        const message = error?.message || String(error);
-        this.console.error(`[Protect ${config.serial}] ${message}`);
-        this.setProtectStatus(config.serial, `Error: ${message}`);
-      }
-    }));
-  }
-
-  private async startProtectAdapter(
-    executable: string,
-    filesPath: string,
-    ffmpegPath: string,
-    config: ProtectAdapterConfig,
-  ): Promise<void> {
-    const directory = path.join(filesPath, 'protect');
-    const configPath = path.join(directory, `${config.serial}.json`);
-
-    const go2rtcConfig = buildProtectGo2rtcConfig({
-      serial: config.serial,
-      address: config.address,
-      apiPort: config.apiPort,
-      rtspPort: config.rtspPort,
-      sourceRtspPort: this.rtspPort,
-      audio: config.audio,
-      requireAuth: config.requireAuth,
-      username: config.username,
-      password: config.password,
-      ffmpegPath,
-    });
-    const temporaryPath = `${configPath}.tmp`;
-    await fs.writeFile(temporaryPath, JSON.stringify(go2rtcConfig, null, 2), { mode: 0o600 });
-    await fs.rename(temporaryPath, configPath);
-
-    const child = spawn(executable, ['-config', configPath], {
-      cwd: filesPath,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    this.protectAdapters.set(config.serial, { child, configPath });
-    this.setProtectStatus(config.serial, 'Starting');
-
-    let startupError: Error | undefined;
-    child.stdout?.on('data', data => this.console.log(`[Protect ${config.serial}] ${String(data).trimEnd()}`));
-    child.stderr?.on('data', data => {
-      const message = String(data).trimEnd();
-      this.console.error(`[Protect ${config.serial}] ${message}`);
-      if (message.includes('listen error='))
-        startupError = new Error(`Unable to bind ${config.address}; confirm the dedicated IP is assigned and ports ${config.apiPort}/${config.rtspPort} are free.`);
-    });
-    child.once('error', error => {
-      const current = this.protectAdapters.get(config.serial);
-      if (current?.child === child)
-        this.setProtectStatus(config.serial, `Error: ${error.message}`);
-    });
-    child.once('exit', (code, signal) => {
-      const current = this.protectAdapters.get(config.serial);
-      if (current?.child !== child)
-        return;
-      this.protectAdapters.delete(config.serial);
-      this.setProtectStatus(config.serial, `Stopped (${signal || code})`);
-    });
-
-    try {
-      const authorization = config.requireAuth
-        ? `Basic ${Buffer.from(`${config.username}:${config.password}`).toString('base64')}`
-        : undefined;
-      const deadline = Date.now() + 10000;
-      let lastError: unknown;
-      while (Date.now() < deadline) {
-        if (startupError)
-          throw startupError;
-        if (child.exitCode !== null)
-          throw new Error(`ONVIF adapter exited with code ${child.exitCode}.`);
-        try {
-          const response = await fetch(`http://${config.address}:${config.apiPort}/api`, {
-            headers: authorization ? { Authorization: authorization } : undefined,
-          });
-          if (response.ok) {
-            await new Promise(resolve => setTimeout(resolve, 200));
-            if (startupError)
-              throw startupError;
-            if (child.exitCode !== null)
-              throw new Error(`ONVIF adapter exited with code ${child.exitCode}.`);
-            this.setProtectStatus(config.serial, `Ready at ${config.address}:${config.apiPort}`);
-            return;
-          }
-          lastError = new Error(`health check returned ${response.status}`);
-        }
-        catch (error) {
-          lastError = error;
-        }
-        await new Promise(resolve => setTimeout(resolve, 250));
-      }
-      throw new Error(`ONVIF adapter did not become ready${lastError instanceof Error ? `: ${lastError.message}` : '.'}`);
-    }
-    catch (error) {
-      const current = this.protectAdapters.get(config.serial);
-      if (current?.child === child)
-        this.protectAdapters.delete(config.serial);
       if (!child.killed)
         child.kill('SIGTERM');
       throw error;
@@ -820,9 +589,12 @@ export default class HarborCameraProvider extends ScryptedDeviceBase
     server.requestTimeout = 30000;
 
     await new Promise<void>((resolve, reject) => {
-      server.once('error', reject);
+      const onStartupError = (error: NodeJS.ErrnoException) => {
+        reject(this.createPortConflictError(error, 'WHIP listener', '0.0.0.0', port, 'TCP'));
+      };
+      server.once('error', onStartupError);
       server.listen(port, '0.0.0.0', () => {
-        server.off('error', reject);
+        server.off('error', onStartupError);
         resolve();
       });
     });
@@ -1000,6 +772,91 @@ export default class HarborCameraProvider extends ScryptedDeviceBase
     this.console.log(`WHIP ${method} ${serial} -> go2rtc ${upstream.status}${location ? ' (session)' : ''}`);
     response.writeHead(upstream.status, responseHeaders);
     response.end(upstreamBody);
+  }
+
+  private async removeLegacyAdapterState(filesPath: string): Promise<void> {
+    const directory = path.join(filesPath, 'protect');
+    let entries;
+    try {
+      entries = await fs.readdir(directory, { withFileTypes: true });
+    }
+    catch (error: any) {
+      if (error?.code === 'ENOENT')
+        return;
+      throw error;
+    }
+
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith('.json'))
+        await this.stopStaleGo2rtc(path.join(directory, entry.name));
+    }
+    await fs.rm(directory, { recursive: true, force: true });
+    this.console.log('Removed legacy per-camera adapter runtime state.');
+  }
+
+  private async assertGo2rtcPortsAvailable(): Promise<void> {
+    validateBridgePorts({
+      whipPort: this.whipPort,
+      apiPort: this.apiPort,
+      rtspPort: this.rtspPort,
+      webrtcPort: this.webrtcPort,
+    });
+    const apiHost = this.exposeGo2rtcWhip ? '0.0.0.0' : '127.0.0.1';
+    await this.assertTcpPortAvailable(apiHost, this.apiPort, 'go2rtc API');
+    await this.assertTcpPortAvailable('127.0.0.1', this.rtspPort, 'private RTSP');
+    await this.assertTcpPortAvailable('0.0.0.0', this.webrtcPort, 'WebRTC media');
+    await this.assertUdpPortAvailable('0.0.0.0', this.webrtcPort, 'WebRTC media');
+  }
+
+  private assertTcpPortAvailable(host: string, port: number, label: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const probe = createServer();
+      const onError = (error: NodeJS.ErrnoException) => {
+        reject(this.createPortConflictError(error, label, host, port, 'TCP'));
+      };
+      probe.once('error', onError);
+      probe.listen(port, host, () => {
+        probe.off('error', onError);
+        probe.close(error => error ? reject(error) : resolve());
+      });
+    });
+  }
+
+  private assertUdpPortAvailable(host: string, port: number, label: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const probe = createSocket('udp4');
+      const onError = (error: NodeJS.ErrnoException) => {
+        try {
+          probe.close();
+        }
+        catch {
+          // The failed bind may leave the socket unopened.
+        }
+        reject(this.createPortConflictError(error, label, host, port, 'UDP'));
+      };
+      probe.once('error', onError);
+      probe.bind({ address: host, port, exclusive: true }, () => {
+        probe.off('error', onError);
+        probe.close(() => resolve());
+      });
+    });
+  }
+
+  private createPortConflictError(
+    error: NodeJS.ErrnoException,
+    label: string,
+    host: string,
+    port: number,
+    protocol: 'TCP' | 'UDP',
+  ): Error {
+    if (error.code === 'EADDRINUSE') {
+      return new Error(
+        `${label} cannot bind ${protocol} ${host}:${port}: address already in use. `
+        + `Run "ss -lntup | grep ':${port}\\b'" inside the Scrypted host to identify the owner, `
+        + 'or select an unused port in Harbor Bridge settings.',
+      );
+    }
+    return new Error(`${label} cannot bind ${protocol} ${host}:${port}: ${error.message}`);
   }
 
   private async stopStaleGo2rtc(configPath: string): Promise<void> {

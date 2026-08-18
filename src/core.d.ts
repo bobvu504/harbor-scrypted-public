@@ -16,17 +16,18 @@ export interface Go2rtcConfigOptions {
   apiPassword?: string;
 }
 
-export interface ProtectGo2rtcConfigOptions {
-  serial: string;
-  address: string;
+export interface BridgePortOptions {
+  whipPort?: number;
   apiPort: number;
   rtspPort: number;
-  sourceRtspPort: number;
-  audio: boolean;
-  requireAuth?: boolean;
-  username?: string;
-  password?: string;
-  ffmpegPath: string;
+  webrtcPort: number;
+}
+
+export interface ValidatedBridgePorts {
+  whipPort?: number;
+  apiPort: number;
+  rtspPort: number;
+  webrtcPort: number;
 }
 
 export interface WhipRequestTarget {
@@ -55,14 +56,11 @@ export const WHIP_PATH: string;
 
 export function validateSerial(value: unknown): string;
 export function validateToken(value: unknown): string;
-export function validateProtectAddress(value: unknown): string;
-export function validateProtectUsername(value: unknown): string;
-export function validateProtectPassword(value: unknown): string;
 export function secureTokenEqual(actual: unknown, expected: unknown): boolean;
 export function parsePort(value: unknown, fallback: number): number;
+export function validateBridgePorts(options: BridgePortOptions): ValidatedBridgePorts;
 export function isGo2rtcProcessForConfig(cmdline: unknown, configPath: string): boolean;
 export function buildGo2rtcConfig(options: Go2rtcConfigOptions): Record<string, any>;
-export function buildProtectGo2rtcConfig(options: ProtectGo2rtcConfigOptions): Record<string, any>;
 export function encodeSessionTarget(pathAndQuery: string): string;
 export function decodeSessionTarget(encoded: string): string;
 export function normalizeGo2rtcSessionLocation(location: unknown): string;
