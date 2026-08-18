@@ -9,6 +9,16 @@ const originalReadFileSync = fs.readFileSync;
 const deviceState = {};
 const discoveredNativeIds = new Set();
 const storageByNativeId = new Map();
+const existingSerial = '2400000009';
+discoveredNativeIds.add(existingSerial);
+storageByNativeId.set(existingSerial, new Map([
+  ['token', 'b'.repeat(64)],
+  ['height', '720'],
+  ['audio', 'true'],
+  ['name', 'Existing Camera'],
+  ['protectEnabled', 'true'],
+  ['protectPassword', 'legacy-password'],
+]));
 
 function getStorage(nativeId) {
   const key = nativeId === undefined ? '__plugin__' : nativeId;
@@ -22,6 +32,7 @@ function getStorage(nativeId) {
   return {
     getItem: name => values.get(name),
     setItem: (name, value) => values.set(name, String(value)),
+    removeItem: name => values.delete(name),
   };
 }
 
@@ -72,6 +83,8 @@ if (typeof plugin.default !== 'function')
 const provider = new plugin.default();
 if (!provider || provider.bridgeStatus !== 'Starting')
   throw new Error('Harbor provider did not initialize.');
+if ([...storageByNativeId.get(existingSerial).keys()].some(key => key.startsWith('protect')))
+  throw new Error('Legacy adapter settings were not removed during provider startup.');
 
 setImmediate(async () => {
   if (!String(provider.bridgeStatus).startsWith('Error: simulation stop'))
@@ -92,14 +105,10 @@ setImmediate(async () => {
   const cameraStorage = getStorage(serial);
   if (cameraStorage.getItem('token') !== token
       || cameraStorage.getItem('height') !== '720'
-      || cameraStorage.getItem('audio') !== 'true'
-      || cameraStorage.getItem('protectUsername') !== 'harbor'
-      || cameraStorage.getItem('protectRequireAuth') !== 'true'
-      || cameraStorage.getItem('protectApiPort') !== '1984'
-      || cameraStorage.getItem('protectRtspPort') !== '8554'
-      || cameraStorage.getItem('protectEnabled') !== 'false'
-      || !/^[a-f0-9]{48}$/.test(cameraStorage.getItem('protectPassword')))
+      || cameraStorage.getItem('audio') !== 'true')
     throw new Error('Harbor camera settings were not stored after discovery.');
+  if (storageByNativeId.get(serial)?.size !== 4)
+    throw new Error('Unexpected camera settings were stored after discovery.');
 
   const networkTested = await exerciseWhipListener(provider, serial, token);
 
