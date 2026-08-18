@@ -3,7 +3,6 @@ import test from 'node:test';
 import {
   buildGo2rtcConfig,
   buildGo2rtcWhipEndpoint,
-  buildProtectGo2rtcConfig,
   buildWhipEndpoint,
   decodeSessionTarget,
   encodeSessionTarget,
@@ -11,9 +10,7 @@ import {
   normalizeGo2rtcSessionLocation,
   parseWhipUrl,
   secureTokenEqual,
-  validateProtectAddress,
-  validateProtectPassword,
-  validateProtectUsername,
+  validateBridgePorts,
   validateSerial,
   validateToken,
 } from '../src/core.mjs';
@@ -49,17 +46,29 @@ test('requires substantial ingest tokens and compares them safely', () => {
   assert.throws(() => validateToken('too-short'));
 });
 
-test('validates dedicated Protect addresses and credentials', () => {
-  assert.equal(validateProtectAddress('192.168.001.021'), '192.168.1.21');
-  assert.throws(() => validateProtectAddress('127.0.0.1'), /unicast/);
-  assert.throws(() => validateProtectAddress('192.168.1.999'), /dedicated IPv4/);
-  assert.throws(() => validateProtectAddress('scrypted.local'), /dedicated IPv4/);
-
-  assert.equal(validateProtectUsername('harbor_camera-1'), 'harbor_camera-1');
-  assert.throws(() => validateProtectUsername('bad:user'));
-  assert.equal(validateProtectPassword('correct-horse-battery-staple'), 'correct-horse-battery-staple');
-  assert.throws(() => validateProtectPassword('too-short'));
-  assert.throws(() => validateProtectPassword('valid-length\nbut-control'));
+test('rejects invalid or overlapping bridge listener ports', () => {
+  assert.deepEqual(validateBridgePorts({
+    whipPort: 11380,
+    apiPort: 11984,
+    rtspPort: 18554,
+    webrtcPort: 18555,
+  }), {
+    whipPort: 11380,
+    apiPort: 11984,
+    rtspPort: 18554,
+    webrtcPort: 18555,
+  });
+  assert.throws(() => validateBridgePorts({
+    whipPort: 11380,
+    apiPort: 11380,
+    rtspPort: 18554,
+    webrtcPort: 18555,
+  }), /cannot both use TCP port 11380/);
+  assert.throws(() => validateBridgePorts({
+    apiPort: 11984,
+    rtspPort: 18554,
+    webrtcPort: 70000,
+  }), /1 through 65535/);
 });
 
 test('builds isolated multi-camera bridge configuration', () => {
@@ -136,69 +145,6 @@ test('keeps the go2rtc API on loopback unless the fallback is explicitly enabled
   assert.deepEqual(exposed.api.allow_paths, ['/api/streams', '/api/webrtc']);
 
   assert.throws(() => buildGo2rtcConfig({ ...base, exposeApi: true }), /username and password/);
-});
-
-test('builds one authenticated UniFi Protect ONVIF adapter per camera', () => {
-  const password = 'p'.repeat(32);
-  const config = buildProtectGo2rtcConfig({
-    serial: '2400000000',
-    address: '192.168.1.21',
-    apiPort: 1984,
-    rtspPort: 8554,
-    sourceRtspPort: 18554,
-    audio: true,
-    requireAuth: true,
-    username: 'harbor',
-    password,
-    ffmpegPath: '/usr/bin/ffmpeg',
-  });
-
-  assert.deepEqual(config.app.modules, ['api', 'rtsp', 'onvif', 'mjpeg', 'exec', 'ffmpeg']);
-  assert.equal(config.api.listen, '192.168.1.21:1984');
-  assert.equal(config.api.username, 'harbor');
-  assert.equal(config.api.password, password);
-  assert.equal(config.api.local_auth, false);
-  assert.deepEqual(config.api.allow_paths, ['/api', '/api/frame.jpeg', '/onvif/']);
-  assert.equal(config.rtsp.listen, '192.168.1.21:8554');
-  assert.equal(config.rtsp.username, 'harbor');
-  assert.equal(config.rtsp.password, password);
-  assert.equal(config.rtsp.default_query, 'mp4');
-  assert.deepEqual(Object.keys(config.streams), ['2400000000']);
-  assert.deepEqual(config.streams['2400000000'], [
-    'rtsp://127.0.0.1:18554/2400000000#media=video',
-    'ffmpeg:rtsp://127.0.0.1:18554/2400000000#audio=aac',
-  ]);
-  assert.deepEqual(config.exec.allow_paths, ['/usr/bin/ffmpeg']);
-});
-
-test('can disable adapter auth and audio without exposing another camera', () => {
-  const config = buildProtectGo2rtcConfig({
-    serial: '2400000001',
-    address: '192.168.1.22',
-    apiPort: 1984,
-    rtspPort: 8554,
-    sourceRtspPort: 18554,
-    audio: false,
-    requireAuth: false,
-    ffmpegPath: '/usr/bin/ffmpeg',
-  });
-
-  assert.equal(config.api.username, undefined);
-  assert.equal(config.rtsp.password, undefined);
-  assert.equal(config.rtsp.default_query, 'video=h264');
-  assert.deepEqual(Object.keys(config.streams), ['2400000001']);
-  assert.equal(config.streams['2400000001'][0], 'rtsp://127.0.0.1:18554/2400000001#media=video');
-
-  assert.throws(() => buildProtectGo2rtcConfig({
-    serial: '2400000001',
-    address: '192.168.1.22',
-    apiPort: 8554,
-    rtspPort: 8554,
-    sourceRtspPort: 18554,
-    audio: false,
-    requireAuth: false,
-    ffmpegPath: '/usr/bin/ffmpeg',
-  }), /same port/);
 });
 
 test('WHIP session locations are opaque and restricted to go2rtc webrtc', () => {
